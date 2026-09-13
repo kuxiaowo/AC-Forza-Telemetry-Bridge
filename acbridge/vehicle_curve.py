@@ -1,15 +1,12 @@
-"""Read AC vehicle data and calculate a synthetic full-load power curve."""
+"""Read runtime vehicle fields directly from AC data/data.acd files."""
 import bisect
 import configparser
-from datetime import datetime
 import hashlib
-import json
 import math
 import os
 from pathlib import Path
+import re
 import struct
-import uuid
-import zlib
 from .vendor.acd import get_encryption_key, _decrypt_bytes
 
 def clean_name(name):
@@ -87,7 +84,9 @@ def lut(raw):
         if len(fields) != 2:
             raise ValueError("扭矩曲线行格式应为 RPM|Nm")
         r, t = map(float, fields)
-        if not math.isfinite(r) or not math.isfinite(t) or r < 0 or t < 0:
+        # Stock AC curves can include negative-RPM starter/reverse-rotation
+        # nodes. They are valid curve anchors even though live RPM is clamped.
+        if not math.isfinite(r) or not math.isfinite(t) or t < 0:
             raise ValueError("扭矩曲线包含无效值")
         if points and r <= points[-1][0]:
             raise ValueError("曲线 RPM 必须严格递增，不能重复")
@@ -97,53 +96,121 @@ def lut(raw):
     return points
 
 
-def analyze(car_dir, source="auto", engine_max=None):
-    files, provenance = load_car(car_dir, source)
-    engine = ini(files["engine.ini"])
-    # A base LUT alone is not a trustworthy full-output curve for these cars.
-    if any(s.startswith("TURBO_") for s in engine.sections()) or any(k in files for k in ("ers.ini", "kers.ini", "hybrid.ini")):
-        raise ValueError("此车包含涡轮或混动配置，当前版本不导入未经修正的基础曲线；尚未支持完整增压/混动模型。")
-    if "script.lua" in files or (Path(car_dir) / "extension" / "ext_config.ini").is_file():
-        raise ValueError("发现车辆脚本/扩展配置，无法确认静态曲线等同有效动力模型，当前版本不自动导入。")
-    curve_file = clean_name(engine.get("HEADER", "POWER_CURVE"))
-    if curve_file not in files:
-        raise ValueError("找不到 engine.ini 指定的扭矩曲线")
-    curve = lut(files[curve_file])
-    limiter = number(engine, "ENGINE_DATA", "LIMITER")
-    idle = number(engine, "ENGINE_DATA", "MINIMUM", 900)
-    if not 100 < idle < limiter <= 100000:
-        raise ValueError("怠速/断油转速无效（暂不支持无断油限制车辆）")
-    if curve[0][0] > idle or curve[-1][0] < limiter:
-        raise ValueError("曲线未覆盖怠速至断油范围，拒绝外推")
-    xs = [p[0] for p in curve]
-    def torque(r):
-        i = min(len(curve)-2, max(0, bisect.bisect_right(xs, r)-1))
-        a, b = curve[i], curve[i+1]
-        return a[1] + (b[1]-a[1])*(r-a[0])/(b[0]-a[0])
-    # Include source knots plus 50 RPM samples; piecewise linear LUT interpolation.
-    rpms = sorted(set([idle, limiter] + [float(r) for r in range(math.ceil(idle/50)*50, math.floor(limiter)+1, 50)]
-                      + [r for r, _ in curve if idle <= r <= limiter]))
-    points = []
-    for r in rpms:
-        t = torque(r)
-        if t <= 0:
-            raise ValueError("驾驶范围内存在零扭矩，不能生成连续正功率档案")
-        points.append(dict(TimestampMS=0, Rpm=r, PowerWatts=t*r*math.pi/30, TorqueNm=t,
-                           SpeedMetersPerSecond=1.0, Gear=1))
-    # Gear/speed are serializer compatibility values, never telemetry or run records.
-    peak = max(points, key=lambda p:p["PowerWatts"])
-    car = provenance["car_id"]
-    ordinal = 1000000000 + zlib.crc32(car.encode()) % 1000000000
-    engine_max = limiter if engine_max is None else float(engine_max)
-    if not math.isfinite(engine_max) or not 100 < engine_max <= 100000:
-        raise ValueError("遥测最高转速量程无效")
-    profile = dict(CarId=car, SyntheticOrdinal=ordinal, EngineMaxRpm=engine_max,
-                   EngineIdleRpm=idle, RedlineRpm=limiter,
-                   MaxPowerWatts=peak["PowerWatts"], MaxPowerRpm=peak["Rpm"],
-                   MaxTorqueNm=max(p["TorqueNm"] for p in points), PowerCurvePoints=points)
-    provenance.update(curve_file=curve_file, computed_not_measured=True,
-        compatibility_fields={"SpeedMetersPerSecond":1.0, "Gear":1, "reason":"原档案校验要求；不是测量值，也不代表轮速模型"},
-        model="静态自然吸气全负荷 LUT；无环境、损伤或瞬态修正", step_rpm=50,
-        limiter_rpm=limiter, peak_power_rpm=peak["Rpm"], peak_power_kw=peak["PowerWatts"]/1000)
-    return profile, provenance
+def protocol_fields(car_dir, source="auto"):
+    """Read runtime fields from the current vehicle's unpacked data."""
+    files, _ = load_car(car_dir, source)
+    result, notes, engine = {}, [], None
+    try:
+        engine = ini(files["engine.ini"])
+        idle = number(engine, "ENGINE_DATA", "MINIMUM")
+        if not 100 < idle <= 100000:
+            raise ValueError("超出有效范围")
+        result["engine_idle_rpm"] = idle
+    except (ValueError, configparser.Error) as exc:
+        notes.append(f"怠速转速未识别：{exc}")
+    try:
+        if "drivetrain.ini" not in files:
+            raise ValueError("车辆数据中没有 drivetrain.ini")
+        drivetrain = ini(files["drivetrain.ini"])
+        traction = drivetrain.get("TRACTION", "TYPE").strip().upper()
+        result["drivetrain_type"] = {"FWD": 0, "RWD": 1, "AWD": 2, "AWD2": 2}[traction]
+        result["drivetrain_source"] = traction
+    except KeyError:
+        notes.append(f"驱动形式未识别：不支持 {traction or '空值'}")
+    except (ValueError, configparser.Error) as exc:
+        notes.append(f"驱动形式未识别：{exc}")
+    try:
+        if "car.ini" not in files:
+            raise ValueError("车辆数据中没有 car.ini")
+        car = ini(files["car.ini"])
+        # Kunos defines STEER_LOCK as degrees from centre to one side, while
+        # shared-memory steerAngle is radians and Forza expects [-1, 1].
+        lock_degrees = number(car, "CONTROLS", "STEER_LOCK")
+        if not 1 <= lock_degrees <= 1080:
+            raise ValueError("转向锁角超出有效范围")
+        result["steer_lock_degrees"] = lock_degrees
+        result["steer_normalization"] = 1 / math.radians(lock_degrees)
+    except (ValueError, configparser.Error) as exc:
+        notes.append(f"转向锁角未识别：{exc}")
+    try:
+        if "suspensions.ini" not in files:
+            raise ValueError("车辆数据中没有 suspensions.ini")
+        suspension = ini(files["suspensions.ini"])
+        ranges = []
+        for section in ("FRONT", "REAR"):
+            # Kunos SDK: UP/DN are metres from the suspension design zero to
+            # each bump stop. Their sum is the full mechanical travel range.
+            travel = number(suspension, section, "BUMPSTOP_UP") + number(
+                suspension, section, "BUMPSTOP_DN")
+            if not 0 < travel <= 2:
+                raise ValueError(f"{section} 最大悬挂行程超出有效范围")
+            ranges.extend((travel, travel))
+        result["suspension_max_travel_m"] = tuple(ranges)
+    except (ValueError, configparser.Error) as exc:
+        notes.append(f"最大悬挂行程未识别：{exc}")
+    try:
+        if engine is None:
+            raise ValueError("engine.ini 无法解析")
+        curve_file = clean_name(engine.get("HEADER", "POWER_CURVE"))
+        if curve_file not in files:
+            raise ValueError("找不到 engine.ini 指定的动力曲线")
+        result["power_curve"] = tuple(lut(files[curve_file]))
+        result["power_curve_source"] = curve_file
+        if (any(s.startswith("TURBO_") for s in engine.sections()) or
+                any(k in files for k in ("ers.ini", "kers.ini", "hybrid.ini"))):
+            notes.append("动力值采用基础全负荷曲线估算，未还原涡轮/混动瞬态修正")
+    except (ValueError, configparser.Error) as exc:
+        notes.append(f"动力曲线未识别：{exc}")
+    return result, notes
 
+
+def curve_torque(points, rpm):
+    """Linearly interpolate a power.lut torque curve without extrapolation."""
+    if not points:
+        return 0.0
+    rpm = finite_number(rpm)
+    if rpm <= points[0][0]:
+        return points[0][1]
+    if rpm >= points[-1][0]:
+        return points[-1][1]
+    xs = [point[0] for point in points]
+    i = bisect.bisect_right(xs, rpm) - 1
+    a, b = points[i], points[i + 1]
+    return a[1] + (b[1] - a[1]) * (rpm - a[0]) / (b[0] - a[0])
+
+
+def finite_number(value):
+    value = float(value)
+    return value if math.isfinite(value) else 0.0
+
+
+def find_car(car, config):
+    """Find the exact current AC car directory without storing a local profile."""
+    if not car or Path(car).name != car or car in (".", ".."):
+        raise ValueError("尚未识别有效 AC 车辆，请先进入赛道并开始适配。")
+    roots = []
+    if config.get("game_directory"):
+        roots.append(Path(config["game_directory"]))
+    if os.name == "nt":
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+                steam = Path(winreg.QueryValueEx(key, "SteamPath")[0])
+            libraries = [steam]
+            library_file = steam / "steamapps/libraryfolders.vdf"
+            if library_file.exists():
+                libraries += [Path(p.replace("\\\\", "\\")) for p in re.findall(
+                    r'"path"\s+"([^"]+)"', library_file.read_text(encoding="utf-8"))]
+            roots += [p / "steamapps/common/assettocorsa" for p in libraries]
+        except OSError:
+            pass
+    roots += [Path(f"{drive}:/Steam/steamapps/common/assettocorsa") for drive in "CDEFGH"]
+    candidates = list(dict.fromkeys(
+        (p / "content/cars" / car).resolve()
+        for p in roots if (p / "content/cars" / car).is_dir()))
+    if (config.get("game_directory") and candidates and
+            candidates[0] == (roots[0] / "content/cars" / car).resolve()):
+        return candidates[0]
+    if len(candidates) != 1:
+        raise ValueError("无法唯一匹配游戏安装目录，请在“游戏目录”中选择正在使用的 AC 根目录。")
+    return candidates[0]

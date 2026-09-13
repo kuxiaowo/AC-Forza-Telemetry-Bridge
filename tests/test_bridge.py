@@ -55,25 +55,39 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(utf16(s.carModel), "赛车测试")
 
     def test_known_packet_offsets_and_units(self):
-        f = from_ac(*fixture(), DEFAULTS)
+        p, g, s = fixture()
+        p.turboBoost = 1.0
+        p.localVelocity[:] = (4, 5, 6)
+        p.localAngularVelocity[:] = (1, 2, 3)
+        f = from_ac(p, g, s, DEFAULTS,
+                    vehicle_fields={"engine_idle_rpm": 950, "drivetrain_type": 1,
+                                    "power_curve": ((0., 100.), (8000., 200.))})
         data = encode(f, 1000)
         self.assertEqual(len(data), 324)
         self.assertEqual(struct.unpack_from("<iI", data, 0), (1, 1000))
         self.assertEqual(struct.unpack_from("<f", data, 16)[0], 4321)
+        self.assertEqual(struct.unpack_from("<f", data, 12)[0], 950)
+        self.assertEqual(struct.unpack_from("<i", data, 224)[0], 1)
+        self.assertAlmostEqual(struct.unpack_from("<f", data, 284)[0], 14.5037738, places=5)
         self.assertAlmostEqual(struct.unpack_from("<f", data, 256)[0], 123.4/3.6, places=4)
+        expected_torque = (100 + 100 * 4321 / 8000) * .5
+        self.assertAlmostEqual(struct.unpack_from("<f", data, 264)[0], expected_torque, places=4)
+        self.assertAlmostEqual(struct.unpack_from("<f", data, 260)[0],
+                               expected_torque * 4321 * math.pi / 30, places=2)
         self.assertEqual(struct.unpack_from("<4f", data, 268), (158, 176, 194, 212))
         self.assertEqual(struct.unpack_from("<f", data, 288)[0], .5)
         self.assertEqual(data[315:321], bytes([128, 64, 64, 0, 4, 192]))
         self.assertAlmostEqual(struct.unpack_from("<f", data, 304)[0], 12.345, places=4)
         self.assertEqual(struct.unpack_from("<H", data, 312)[0], 3)
-        self.assertAlmostEqual(struct.unpack_from("<f", data, 20)[0], 9.80665, places=5)
-        self.assertEqual(struct.unpack_from("<3f", data, 244), (1, 2, 3))
+        self.assertAlmostEqual(struct.unpack_from("<f", data, 20)[0], -9.80665, places=5)
+        self.assertEqual(struct.unpack_from("<3f", data, 32), (-4, 5, 6))
+        self.assertEqual(struct.unpack_from("<3f", data, 44), (-1, -2, -3))
+        self.assertEqual(struct.unpack_from("<3f", data, 244), (-1, 2, 3))
 
     def test_extended_format_and_counter_wrap(self):
         d = encode(demo_frame(), 2**32+7, "fh5")
-        self.assertEqual(len(d), 331)
+        self.assertEqual(len(d), 324)
         self.assertEqual(struct.unpack_from("<I", d, 4)[0], 7)
-        self.assertEqual(d[324:], bytes(7))
         with self.assertRaises(ValueError):
             encode(Frame(), 0, "unknown")
 
@@ -86,6 +100,10 @@ class ProtocolTests(unittest.TestCase):
         f = from_ac(p, g, s, {**DEFAULTS, "invert_clutch": False, "invert_steer": True})
         self.assertEqual(f.clutch, .75)
         self.assertEqual(f.steer, .5)
+        f = from_ac(p, g, s, DEFAULTS,
+                    vehicle_fields={"steer_normalization": 1 / math.radians(450)})
+        self.assertEqual(f.clutch, .25)
+        self.assertAlmostEqual(f.steer, -.5 / math.radians(450))
         s.maxFuel = 0
         s.maxRpm = 0
         p.speedKmh = math.nan
@@ -203,6 +221,31 @@ class RuntimeTests(unittest.TestCase):
         self.receive_until(lambda d: struct.unpack_from("<i", d)[0] == 0)
         new = self.receive_until(lambda d: struct.unpack_from("<i", d)[0] == 1)
         self.assertNotEqual(old[212:216], new[212:216])
+
+    def test_vehicle_file_fields_reach_actual_udp_packet(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "content/cars/test/data"
+            data.mkdir(parents=True)
+            (data / "engine.ini").write_text(
+                "[HEADER]\nPOWER_CURVE=power.lut\n[ENGINE_DATA]\nLIMITER=8000\nMINIMUM=875\n",
+                encoding="utf-8")
+            (data / "car.ini").write_text("[CONTROLS]\nSTEER_LOCK=450\n", encoding="utf-8")
+            (data / "drivetrain.ini").write_text("[TRACTION]\nTYPE=AWD\n", encoding="utf-8")
+            (data / "suspensions.ini").write_text(
+                "[FRONT]\nBUMPSTOP_UP=.08\nBUMPSTOP_DN=.04\n"
+                "[REAR]\nBUMPSTOP_UP=.06\nBUMPSTOP_DN=.08\n", encoding="utf-8")
+            (data / "power.lut").write_text("0|100\n8000|100\n", encoding="utf-8")
+            self.bridge = Bridge(
+                {**DEFAULTS, "port": self.sock.getsockname()[1], "game_directory": str(root)},
+                reader=self.reader, base=root)
+            self.bridge.start()
+            packet = self.receive_until(lambda d: struct.unpack_from("<i", d)[0] == 1)
+            self.assertEqual(struct.unpack_from("<f", packet, 12)[0], 875)
+            self.assertEqual(struct.unpack_from("<i", packet, 224)[0], 2)
+            self.assertEqual(struct.unpack_from("<b", packet, 320)[0], -8)
+            self.assertGreater(struct.unpack_from("<f", packet, 260)[0], 0)
+            self.assertGreater(struct.unpack_from("<f", packet, 264)[0], 0)
 
     def test_restart_preserves_monotonic_protocol_clock(self):
         self.bridge.start()

@@ -3,6 +3,7 @@ import math
 import struct
 import zlib
 from .shared_memory import utf16
+from .vehicle_curve import curve_torque
 
 
 def finite(value, default=0.0):
@@ -35,16 +36,19 @@ class Frame:
     status: str = "等待游戏"
     speed_kmh: float = 0.0
     rpm: float = 0.0
+    idle_rpm: float = 0.0
     power_watts: float = 0.0
     torque_nm: float = 0.0
     max_rpm: float = 9000.0
     gear: int = 11
+    drivetrain_type: int = 0
     throttle: float = 0.0
     brake: float = 0.0
     clutch: float = 0.0
     steer: float = 0.0
     fuel_fraction: float = 0.0
     fuel_litres: float = 0.0
+    boost_psi: float = 0.0
     temps_c: tuple = (0., 0., 0., 0.)
     acc: tuple = (0., 0., 0.)
     velocity: tuple = (0., 0., 0.)
@@ -65,7 +69,8 @@ class Frame:
     notes: list = field(default_factory=list)
 
 
-def from_ac(p, g, s, config, vehicles=None):
+def from_ac(p, g, s, config, vehicle_fields=None):
+    vehicle_fields = vehicle_fields or {}
     status = {0: "等待进入驾驶", 1: "回放（暂停发送驾驶数据）", 2: "已连接 AC", 3: "游戏已暂停"}.get(g.status, "未知游戏状态")
     notes = []
     maxrpm = float(s.maxRpm)
@@ -75,8 +80,10 @@ def from_ac(p, g, s, config, vehicles=None):
     if s.maxFuel <= 0:
         notes.append("油箱容量缺失，燃油比例以 0 占位")
     clutch = 1 - finite(p.clutch) if config["invert_clutch"] else finite(p.clutch)
-    steer = finite(p.steerAngle) * config["steer_scale"] * (-1 if config["invert_steer"] else 1)
-    fallback = vehicles.ranges(utf16(s.carModel)) if vehicles else (0.,) * 4
+    steer_normalization = vehicle_fields.get("steer_normalization", 1.0)
+    steer = (finite(p.steerAngle) * steer_normalization * config["steer_scale"]
+             * (-1 if config["invert_steer"] else 1))
+    fallback = vehicle_fields.get("suspension_max_travel_m", (0.,) * 4)
     maxima, sources = [], []
     for i in range(4):
         live = finite(s.suspensionMaxTravel[i])
@@ -85,28 +92,41 @@ def from_ac(p, g, s, config, vehicles=None):
             sources.append("shared_memory")
         else:
             maxima.append(fallback[i])
-            sources.append("vehicle_config_estimate" if fallback[i] > 0 else "missing")
+            sources.append("unpacked_vehicle_data" if fallback[i] > 0 else "missing")
     norm = tuple(clamp(finite(p.suspensionTravel[i]) / maxima[i], 0, 1)
                  if maxima[i] > 0 else 0. for i in range(4))
-    if "vehicle_config_estimate" in sources:
-        notes.append("部分悬挂最大行程采用车辆配置推算，尚未标定物理极限")
+    if "unpacked_vehicle_data" in sources:
+        notes.append("部分悬挂最大行程由车辆 suspensions.ini 解包计算")
     if any(value < .1 for value in norm):
         notes.append("原程序红线学习受阻：至少一轮归一化悬挂低于 10%（含最大行程缺失）")
     elif g.status == 2:
         notes.append("红线学习实验：需前进挡稳定、油门≥90%、刹车/离合≤5%，观察断油回落")
+    throttle = clamp(p.gas, 0, 1)
+    full_torque = curve_torque(vehicle_fields.get("power_curve", ()), p.rpms)
+    torque = max(0., full_torque * throttle)
+    power = torque * clamp(p.rpms, 0, 100000) * math.pi / 30
     return Frame(
         active=g.status == 2, car=utf16(s.carModel),
         track=(utf16(s.track) + " " + utf16(s.trackConfiguration)).strip(), status=status,
-        speed_kmh=clamp(p.speedKmh, 0, 2500), rpm=clamp(p.rpms, 0, 100000), max_rpm=maxrpm,
-        gear=gear_byte(p.gear), throttle=clamp(p.gas, 0, 1), brake=clamp(p.brake, 0, 1),
+        speed_kmh=clamp(p.speedKmh, 0, 2500), rpm=clamp(p.rpms, 0, 100000),
+        idle_rpm=clamp(vehicle_fields.get("engine_idle_rpm", 0), 0, 100000), max_rpm=maxrpm,
+        gear=gear_byte(p.gear), drivetrain_type=int(vehicle_fields.get("drivetrain_type", 0)),
+        power_watts=power, torque_nm=torque,
+        throttle=throttle, brake=clamp(p.brake, 0, 1),
         clutch=clamp(clutch, 0, 1), steer=clamp(steer, -1, 1),
         fuel_fraction=clamp(p.fuel / s.maxFuel, 0, 1) if s.maxFuel > 0 else 0.,
-        fuel_litres=max(0., finite(p.fuel)), temps_c=tuple(finite(v) for v in p.tyreCoreTemperature),
-        acc=tuple(finite(v) * 9.80665 for v in p.accG),
-        velocity=tuple(finite(v) for v in p.localVelocity),
-        angular=tuple(finite(v) for v in p.localAngularVelocity),
+        fuel_litres=max(0., finite(p.fuel)), boost_psi=clamp(p.turboBoost * 14.5037738, 0, 1000),
+        temps_c=tuple(finite(v) for v in p.tyreCoreTemperature),
+        # AC local X points left; Forza local X points right. AC angular rates
+        # have the opposite sign to the corresponding heading/pitch/roll rates.
+        acc=(-finite(p.accG[0]) * 9.80665, finite(p.accG[1]) * 9.80665,
+             finite(p.accG[2]) * 9.80665),
+        velocity=(-finite(p.localVelocity[0]), finite(p.localVelocity[1]),
+                  finite(p.localVelocity[2])),
+        angular=tuple(-finite(v) for v in p.localAngularVelocity),
         orientation=tuple(finite(v) for v in (p.heading, p.pitch, p.roll)),
-        position=tuple(finite(v) for v in g.carCoordinates),
+        position=(-finite(g.carCoordinates[0]), finite(g.carCoordinates[1]),
+                  finite(g.carCoordinates[2])),
         suspension=tuple(finite(v) for v in p.suspensionTravel), normalized_suspension=norm,
         suspension_max_used=tuple(maxima), suspension_sources=tuple(sources),
         wheel_speed=tuple(finite(v) for v in p.wheelAngularSpeed),
@@ -119,18 +139,18 @@ def from_ac(p, g, s, config, vehicles=None):
 def encode(frame, timestamp_ms, packet_format="fh4", race_time=0.0):
     """Little-endian Horizon Dash: 232-byte Sled + 12-byte gap + Dash + padding.
 
-    FH4: 324 bytes. FH5: 331 bytes (same fields, 7 extra reserved bytes).
+    FH4/FH5 Horizon Dash: 324 bytes.
     Unsupported fields remain zero. No NaNs are used as 'missing' sentinels.
     """
     if packet_format not in ("fh4", "fh5"):
         raise ValueError("仅支持 fh4 / fh5 数据格式")
-    data = bytearray(324 if packet_format == "fh4" else 331)
+    data = bytearray(324)
     def put(offset, fmt, *values):
         struct.pack_into("<" + fmt, data, offset, *values)
     def floats(offset, values):
         put(offset, "f" * len(values), *(finite(v) for v in values))
     put(0, "iI", int(frame.active), int(timestamp_ms) & 0xFFFFFFFF)
-    floats(8, (frame.max_rpm, 0, frame.rpm))  # Idle RPM unavailable.
+    floats(8, (frame.max_rpm, frame.idle_rpm, frame.rpm))
     floats(20, frame.acc)
     floats(32, frame.velocity)
     floats(44, frame.angular)
@@ -144,10 +164,11 @@ def encode(frame, timestamp_ms, packet_format="fh4", race_time=0.0):
     # Compatibility identity ONLY: Forza rejects vehicle profiles with PI <= 0.
     # This is not an AC performance rating. Keep this experiment's profiles isolated.
     put(220, "i", 1)
+    put(224, "i", frame.drivetrain_type)
     floats(244, frame.position)
     floats(256, (frame.speed_kmh / 3.6, frame.power_watts, frame.torque_nm))
     floats(268, tuple(v * 1.8 + 32 for v in frame.temps_c))
-    floats(284, (0, frame.fuel_fraction, frame.distance,
+    floats(284, (frame.boost_psi, frame.fuel_fraction, frame.distance,
                  frame.best_lap, frame.last_lap, frame.current_lap, race_time))
     put(312, "H", min(65535, max(0, frame.laps)))
     put(314, "BBBBBB", min(255, max(0, frame.race_position)),
