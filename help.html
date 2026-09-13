@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AC → Forza 遥测适配器使用说明</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0c121c; --panel:#131d2a; --line:#2a3a4e; --text:#e7eef7; --muted:#9fb0c5; --cyan:#61ddd0; --green:#63d88c; --amber:#ffbd6b; --red:#ff7f87; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:linear-gradient(140deg,#0b111a,#101b29 60%,#0b111a); color:var(--text); font:15px/1.65 "Microsoft YaHei UI","Segoe UI",sans-serif; }
+    main { width:min(1180px,calc(100% - 32px)); margin:30px auto 70px; }
+    header,.card { background:rgba(19,29,42,.94); border:1px solid var(--line); border-radius:14px; box-shadow:0 18px 45px #0005; }
+    header { padding:28px 32px; border-top:4px solid var(--cyan); }
+    h1 { margin:0 0 5px; color:var(--cyan); font-size:29px; }
+    h2 { margin:0 0 14px; color:#dce9f7; font-size:21px; }
+    h3 { margin:20px 0 8px; color:#c9d7e8; font-size:16px; }
+    p { margin:8px 0; } .muted { color:var(--muted); }
+    nav { display:flex; flex-wrap:wrap; gap:8px; margin-top:18px; }
+    nav a { color:#071215; background:var(--cyan); padding:5px 11px; border-radius:99px; text-decoration:none; font-weight:700; }
+    .card { margin-top:18px; padding:24px 28px; overflow:hidden; }
+    ol,ul { padding-left:22px; }
+    code { background:#09101a; border:1px solid #27384d; border-radius:5px; padding:1px 5px; color:#8ce9df; }
+    .note { border-left:4px solid var(--amber); background:#2a2216; padding:10px 14px; border-radius:6px; color:#ffe0aa; }
+    .ok { color:var(--green); } .convert { color:var(--amber); } .none { color:var(--red); }
+    .legend { display:flex; flex-wrap:wrap; gap:18px; margin:8px 0 14px; font-weight:700; }
+    .table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:9px; }
+    table { width:100%; border-collapse:collapse; min-width:940px; font-size:13px; }
+    th { position:sticky; top:0; background:#1c2b3c; color:#d9e8f7; text-align:left; }
+    th,td { padding:9px 10px; border-bottom:1px solid #263547; vertical-align:top; }
+    tbody tr:nth-child(even) { background:#101925; } tbody tr:hover { background:#1a2939; }
+    td:first-child { white-space:nowrap; color:#a9dff0; font-family:Consolas,monospace; }
+    .status { white-space:nowrap; font-weight:700; }
+    footer { color:var(--muted); text-align:center; margin-top:22px; }
+    @media(max-width:650px){ main{width:min(100% - 16px,1180px);margin-top:8px}.card,header{padding:18px}h1{font-size:23px} }
+  </style>
+</head>
+<body><main>
+  <header>
+    <h1>Assetto Corsa → Forza Horizon 遥测适配器</h1>
+    <p class="muted">本地使用说明 · 324 字节 Horizon Dash · 默认 60 Hz</p>
+    <nav><a href="#start">开始使用</a><a href="#mapping">完整映射</a><a href="#vehicle">车辆解包</a><a href="#limits">已知限制</a><a href="#trouble">故障排查</a></nav>
+  </header>
+
+  <section class="card" id="start">
+    <h2>开始使用</h2>
+    <ol>
+      <li>启动原版 Assetto Corsa 1，并进入赛道驾驶界面。</li>
+      <li>启动 <code>ACForzaBridge.exe</code>。目标仪表与本机运行时通常使用 <code>127.0.0.1</code>；远程设备则填写其 IPv4 地址。</li>
+      <li>让接收端监听与适配器相同的 UDP 端口，默认是 <code>8094</code>，数据格式选择 Forza Horizon / Horizon Dash。</li>
+      <li>点击“开始适配”。显示“已连接 AC”后，程序持续发送数据；暂停、回放、退出赛道或共享内存停更时自动发送非比赛状态。</li>
+    </ol>
+    <p>程序优先使用手动选择的游戏目录；否则读取 Steam 注册表和 <code>libraryfolders.vdf</code>，并检查 C:～H: 下的标准 Steam 路径。无法唯一匹配时，点击“游戏目录…”选择包含 <code>content/cars</code> 的 AC 根目录。</p>
+    <p class="note">“模拟测试”只验证发送链路，不代表真实车辆数据。UDP 本身没有接收确认；包数增加只证明本机发送调用成功。</p>
+  </section>
+
+  <section class="card" id="mapping">
+    <h2>完整字段映射</h2>
+    <div class="legend"><span class="ok">● 直接/等价</span><span class="convert">● 需要转换或估算</span><span class="none">● 无可靠映射，置零</span></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Forza 偏移/字段</th><th>AC 来源</th><th>状态</th><th>适配器操作</th></tr></thead>
+      <tbody>
+        <tr><td>0 IsRaceOn</td><td>graphics.status</td><td class="ok status">状态转换</td><td>仅 AC 实时驾驶状态 2 发送 1；等待、回放、暂停和断线发送 0。</td></tr>
+        <tr><td>4 TimestampMS</td><td>适配器单调时钟</td><td class="convert status">生成</td><td>毫秒计数并按 uint32 回绕；不是 AC 原始比赛时间。</td></tr>
+        <tr><td>8 EngineMaxRpm</td><td>static.maxRpm</td><td class="ok status">直接</td><td>限制到合理范围；缺失时使用配置 <code>fallback_max_rpm</code>。</td></tr>
+        <tr><td>12 EngineIdleRpm</td><td>engine.ini / ENGINE_DATA / MINIMUM</td><td class="ok status">解包</td><td>车辆切换时从 data 或 data.acd 读取。</td></tr>
+        <tr><td>16 CurrentEngineRpm</td><td>physics.rpms</td><td class="ok status">直接</td><td>限制为 0～100000 RPM。</td></tr>
+        <tr><td>20–31 Acceleration X/Y/Z</td><td>physics.accG</td><td class="convert status">单位与坐标</td><td><code>(-X, Y, Z) × 9.80665</code>，从 g 转 m/s²；X 改为 Forza 的右向正轴。</td></tr>
+        <tr><td>32–43 Velocity X/Y/Z</td><td>physics.localVelocity</td><td class="convert status">坐标</td><td><code>(-X, Y, Z)</code>，单位保持 m/s。</td></tr>
+        <tr><td>44–55 AngularVelocity X/Y/Z</td><td>physics.localAngularVelocity</td><td class="convert status">方向</td><td>三个分量全部反向，单位保持 rad/s，使其与输出姿态变化方向一致。</td></tr>
+        <tr><td>56–67 Yaw/Pitch/Roll</td><td>heading / pitch / roll</td><td class="ok status">重命名</td><td>按 Yaw、Pitch、Roll 顺序发送，单位为弧度。</td></tr>
+        <tr><td>68–83 NormSuspensionTravel ×4</td><td>suspensionTravel、suspensionMaxTravel</td><td class="convert status">归一化</td><td><code>clamp(当前行程 ÷ 最大行程, 0, 1)</code>。最大值优先取共享内存，缺失则解包 suspensions.ini。</td></tr>
+        <tr><td>84–99 TireSlipRatio ×4</td><td>无等价来源</td><td class="none status">置零</td><td>AC wheelSlip 不是 Forza 的归一化滑移率，不冒充映射。</td></tr>
+        <tr><td>100–115 WheelRotationSpeed ×4</td><td>physics.wheelAngularSpeed</td><td class="ok status">直接</td><td>轮序均为 FL、FR、RL、RR，单位 rad/s。</td></tr>
+        <tr><td>116–131 WheelOnRumbleStrip ×4</td><td>无直接字段</td><td class="none status">置零</td><td>AC 标准接口没有四轮路肩接触等价值。</td></tr>
+        <tr><td>132–147 WheelInPuddleDepth ×4</td><td>无直接字段</td><td class="none status">置零</td><td>AC1 标准共享内存没有积水深度。</td></tr>
+        <tr><td>148–163 SurfaceRumble ×4</td><td>无直接字段</td><td class="none status">置零</td><td>没有与 Forza 四轮路面震动等价的数值。</td></tr>
+        <tr><td>164–179 TireSlipAngle ×4</td><td>无共享内存等价来源</td><td class="none status">置零</td><td>Python API 虽有物理侧偏角，但定义不是 Forza 归一化失抓值，当前外部桥也不读取 Python API。</td></tr>
+        <tr><td>180–195 TireCombinedSlip ×4</td><td>无等价来源</td><td class="none status">置零</td><td>AC 与 Forza 的综合滑移定义不同。</td></tr>
+        <tr><td>196–211 SuspensionTravelMeters ×4</td><td>physics.suspensionTravel</td><td class="ok status">直接</td><td>四轮原始垂直行程，单位米。</td></tr>
+        <tr><td>212 CarOrdinal</td><td>AC 车辆目录 ID</td><td class="convert status">合成</td><td><code>1000000000 + CRC32(car_id)</code>，仅用于隔离车型，不是 Forza 官方车辆编号。</td></tr>
+        <tr><td>216 CarClass</td><td>无对应分类</td><td class="none status">置零</td><td>AC 没有 Forza 的 D～X 等车辆等级。</td></tr>
+        <tr><td>220 CarPerformanceIndex</td><td>无对应 PI</td><td class="convert status">兼容占位</td><td>固定发送 1；不代表车辆性能。</td></tr>
+        <tr><td>224 DrivetrainType</td><td>drivetrain.ini / TRACTION / TYPE</td><td class="convert status">枚举</td><td>FWD→0、RWD→1、AWD/AWD2→2。</td></tr>
+        <tr><td>228 NumCylinders</td><td>未接入</td><td class="none status">置零</td><td>当前不推断或伪造气缸数。</td></tr>
+        <tr><td>232–243 HorizonReserved</td><td>无</td><td class="none status">置零</td><td>Horizon 布局保留区。</td></tr>
+        <tr><td>244–255 Position X/Y/Z</td><td>graphics.carCoordinates</td><td class="convert status">坐标</td><td><code>(-X, Y, Z)</code>，X 反向以转换坐标手性。</td></tr>
+        <tr><td>256 Speed</td><td>physics.speedKmh</td><td class="convert status">单位</td><td><code>km/h ÷ 3.6</code> 转为 m/s。</td></tr>
+        <tr><td>260 Power</td><td>power.lut、RPM、油门</td><td class="convert status">估算</td><td>曲线插值扭矩乘油门，再以 <code>T × RPM × π / 30</code> 得到 W。</td></tr>
+        <tr><td>264 Torque</td><td>power.lut、RPM、油门</td><td class="convert status">估算</td><td>在全负荷扭矩曲线按 RPM 线性插值，再乘 0～1 油门。</td></tr>
+        <tr><td>268–283 TireTemp ×4</td><td>physics.tyreCoreTemperature</td><td class="convert status">单位</td><td>AC 胎芯温度 °C 转为 °F：<code>°C × 1.8 + 32</code>。</td></tr>
+        <tr><td>284 Boost</td><td>physics.turboBoost</td><td class="convert status">单位</td><td>bar 转 PSI：<code>bar × 14.5037738</code>。</td></tr>
+        <tr><td>288 Fuel</td><td>fuel / static.maxFuel</td><td class="convert status">归一化</td><td>发送 0～1 的剩余燃油比例；容量缺失时为 0。</td></tr>
+        <tr><td>292 DistanceTraveled</td><td>graphics.distanceTraveled</td><td class="ok status">直接</td><td>负值和无效值归零。</td></tr>
+        <tr><td>296 BestLap</td><td>graphics.iBestTime</td><td class="convert status">单位</td><td>毫秒除以 1000，发送秒。</td></tr>
+        <tr><td>300 LastLap</td><td>graphics.iLastTime</td><td class="convert status">单位</td><td>毫秒除以 1000，发送秒。</td></tr>
+        <tr><td>304 CurrentLap</td><td>graphics.iCurrentTime</td><td class="convert status">单位</td><td>毫秒除以 1000，发送秒。</td></tr>
+        <tr><td>308 CurrentRaceTime</td><td>适配器活动计时</td><td class="convert status">生成</td><td>只在连续实时驾驶期间累计；不是 AC 原始赛事总时间。</td></tr>
+        <tr><td>312 LapNumber</td><td>graphics.completedLaps</td><td class="convert status">语义近似</td><td>当前发送“已完成圈数”，与某些接收端显示的“正在进行圈号”可能相差 1。</td></tr>
+        <tr><td>314 RacePosition</td><td>graphics.position</td><td class="ok status">直接</td><td>限制为 uint8 范围。</td></tr>
+        <tr><td>315 Accel</td><td>physics.gas</td><td class="convert status">量化</td><td>0～1 转为 0～255。</td></tr>
+        <tr><td>316 Brake</td><td>physics.brake</td><td class="convert status">量化</td><td>0～1 转为 0～255。</td></tr>
+        <tr><td>317 Clutch</td><td>physics.clutch</td><td class="convert status">反向/量化</td><td>AC 实车为 1=接合/松开；默认先算 <code>1-value</code>，再转 0～255。</td></tr>
+        <tr><td>318 Handbrake</td><td>无标准共享内存字段</td><td class="none status">置零</td><td>不根据车轮状态猜测手刹输入。</td></tr>
+        <tr><td>319 Gear</td><td>physics.gear</td><td class="convert status">枚举</td><td>AC 0=R、1=N、2=1挡；转换为 Forza 0=R、11=N、1=1挡。</td></tr>
+        <tr><td>320 Steer</td><td>steerAngle、car.ini STEER_LOCK</td><td class="convert status">归一化</td><td>弧度除以单侧转向锁角，限制到 -1～1，再量化到有符号 int8；可手动反向。</td></tr>
+        <tr><td>321 NormalizedDrivingLine</td><td>无等价值</td><td class="none status">置零</td><td>AC idealLineOn 只是开关，不是相对推荐线的位置。</td></tr>
+        <tr><td>322 NormalizedAIBrakeDifference</td><td>无等价值</td><td class="none status">置零</td><td>AC 标准接口不提供该 AI 制动差值。</td></tr>
+        <tr><td>323 Padding/Unknown</td><td>无</td><td class="none status">置零</td><td>保持零，整个 FH4/FH5 包固定为 324 字节。</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="card" id="vehicle">
+    <h2>车辆解包与计算</h2>
+    <p>每次车辆、赛道或会话身份变化时，适配器找到 <code>content/cars/&lt;car_id&gt;</code>，从明文 <code>data</code> 或加密容器 <code>data.acd</code> 读取以下内容；不会修改或重新打包游戏文件。</p>
+    <ul>
+      <li><code>engine.ini</code>：怠速和动力曲线文件名。</li>
+      <li><code>power.lut</code>：RPM→全负荷扭矩节点，包括原版车允许的负转速启动节点。</li>
+      <li><code>drivetrain.ini</code>：FWD、RWD、AWD/AWD2。</li>
+      <li><code>car.ini</code>：从中心到单侧的 <code>STEER_LOCK</code>。</li>
+      <li><code>suspensions.ini</code>：前后 <code>BUMPSTOP_UP + BUMPSTOP_DN</code>，作为共享内存最大行程缺失时的四轮回退值。</li>
+    </ul>
+    <p class="note">功率/扭矩是静态曲线估算。线性油门缩放不能完整还原涡轮迟滞、增压控制、混动电机、发动机制动、TC、损伤、空气密度和传动损耗。</p>
+  </section>
+
+  <section class="card" id="limits">
+    <h2>没有映射或刻意不映射的数据</h2>
+    <p>滑移率、侧偏角、综合滑移、路肩接触、积水、四轮路面震动、手刹、Forza 车辆等级/真实 PI、气缸数、推荐行车线和 AI 刹车差值保持为零或明确占位。AC 虽还提供刹车温度、轮胎磨损、DRS、ERS/KERS、损伤和旗帜等数据，但 Horizon Dash 当前对应布局没有接入这些字段。</p>
+    <p>归一化悬挂沿用现有的“当前行程÷最大行程”算法；它不证明每辆模组车都严格符合 Forza 的 0=全伸、1=全压语义。</p>
+  </section>
+
+  <section class="card" id="trouble">
+    <h2>常见问题</h2>
+    <h3>一直显示等待游戏</h3><p>确认运行的是 AC1，且已进入赛道。启动器或主菜单不会持续更新三块共享内存。</p>
+    <h3>提示无法唯一匹配游戏目录</h3><p>点击“游戏目录…”，选择实际运行的 Assetto Corsa 根目录，不要选择某一辆车的目录。</p>
+    <h3>仪表完全没有数据</h3><p>确认 IP、端口一致，接收端选择 Horizon Dash；远程设备还需检查 Windows 防火墙和局域网隔离。</p>
+    <h3>离合或转向方向相反</h3><p>AC 默认需要“离合反向”。不同接收端或控制配置若表现相反，可使用界面的离合/转向反向选项。</p>
+    <h3>功率与车辆标称值不同</h3><p>当前显示的是根据基础全负荷曲线和油门估算的发动机功率，不是轮上实测功率；涡轮和混动车差异会更明显。</p>
+  </section>
+  <footer>AC → Forza Telemetry Bridge · 本说明文件随程序离线提供</footer>
+</main></body></html>

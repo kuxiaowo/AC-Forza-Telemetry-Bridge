@@ -7,6 +7,7 @@ _internal/
 build-work/
 dist/
 build/
+tmp/
 logs/
 learning_records/
 config.json

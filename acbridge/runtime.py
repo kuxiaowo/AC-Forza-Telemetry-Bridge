@@ -12,7 +12,6 @@ import socket
 import threading
 import time
 
-from .vehicles import VehicleStore
 from .shared_memory import ACReader, MissingGame, BusyFrame, utf16
 from .telemetry import Frame, from_ac, encode, demo_frame
 
@@ -99,10 +98,8 @@ class PortGuard:
 class Bridge:
     def __init__(self, config, simulated=False, reader=None, base=None):
         self.base = Path(base) if base is not None else None
-        self.learning_requested = threading.Event()
-        self.pending_learning = None
-        self.learning_check_at = 0.
-        self.vehicles = VehicleStore(Path(base) / "vehicles" if base is not None else None)
+        self.vehicle_fields = {}
+        self.vehicle_fields_note = ""
         self.config = validate(config)
         self.simulated = simulated
         self.reader = reader if reader is not None else ACReader()
@@ -130,13 +127,6 @@ class Bridge:
     def stop(self):
         self.stop_event.set()
 
-    def learn(self):
-        snap=self.get_snapshot()
-        if self.simulated or not snap['running'] or not snap['frame']['car'] or snap.get('learning'):
-            raise ValueError('请先开始适配并连接真实 AC 车辆；不能在模拟模式或学习期间再次启动。')
-        self.publish(learning=True,learning_result='准备读取当前车辆曲线…')
-        self.learning_requested.set()
-
     def run(self):
         sock = guard = None
         cfg = self.config
@@ -161,19 +151,6 @@ class Bridge:
             sock.settimeout(.2)
             while not self.stop_event.is_set():
                 now = time.monotonic()
-                if self.learning_requested.is_set():
-                    self.learning_requested.clear()
-                    try:
-                        from .learning import run_learning
-                        result=run_learning(self,sock,target,frame)
-                    except Exception as exc:
-                        result=f'学习未完成：{exc}'
-                        self.logger.exception('动力学习未完成')
-                    self.publish(learning=False,learning_result=result)
-                    last_ids=None
-                    last_change=tick=last_tick=time.monotonic()
-                    was_active=False
-                    continue
                 if self.simulated:
                     frame = demo_frame()
                 elif now < reopen_at:
@@ -189,13 +166,28 @@ class Bridge:
                             last_ids, last_change = ids, now
                         if now - last_change > cfg["stale_seconds"]:
                             raise MissingGame("游戏数据已停止更新")
-                        frame = from_ac(p, g, s, cfg, self.vehicles)
+                        frame = from_ac(p, g, s, cfg, vehicle_fields=self.vehicle_fields)
                         new_identity = (frame.car, frame.track, g.session)
                         if new_identity != identity:
                             # Separate datasets when changing cars / tracks, even during a live session.
                             if identity is not None:
                                 sock.sendto(encode(Frame(), int(now*1000), cfg["packet_format"]), target)
                             identity, active_elapsed = new_identity, 0.
+                            self.vehicle_fields = {}
+                            self.vehicle_fields_note = ""
+                            if self.base is not None:
+                                try:
+                                    from .vehicle_curve import find_car, protocol_fields
+                                    directory = find_car(frame.car, cfg)
+                                    self.vehicle_fields, field_notes = protocol_fields(
+                                        directory, cfg.get("curve_data_source", "auto"))
+                                    self.vehicle_fields_note = "；".join(field_notes)
+                                except (ValueError, OSError, KeyError) as exc:
+                                    self.vehicle_fields_note = f"车辆配置字段未识别：{exc}"
+                                    self.logger.warning(self.vehicle_fields_note)
+                            frame = from_ac(p, g, s, cfg, vehicle_fields=self.vehicle_fields)
+                        if self.vehicle_fields_note:
+                            frame.notes.append(self.vehicle_fields_note)
                     except BusyFrame:
                         self.stop_event.wait(1/cfg["hz"])
                         continue

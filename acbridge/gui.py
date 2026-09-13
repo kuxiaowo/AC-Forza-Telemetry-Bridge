@@ -11,7 +11,7 @@ class App:
         self.path = base / "config.json"
         self.bridge = None
         self.closing = False
-        root.title("神力科莎 → Forza · 自动车辆动力学习版（8094）")
+        root.title("神力科莎 → Forza · 实时遥测适配器（8094）")
         root.geometry("760x670")
         root.minsize(700, 640)
         root.configure(bg="#101723")
@@ -67,11 +67,7 @@ class App:
         self.stop_button = ttk.Button(buttons, text="停止", command=self.stop, state="disabled")
         self.stop_button.pack(side="left", padx=(0, 10))
         ttk.Button(buttons, text="使用说明", command=self.help).pack(side="left")
-        self.learn_button = ttk.Button(box, text="完整动力学习（模拟）", command=self.learn_curve)
-        self.learn_button.pack(anchor="w", pady=(0, 6))
         ttk.Button(box, text="游戏目录…", command=self.choose_game).pack(anchor="w", pady=(0, 6))
-        self.learning_text = tk.StringVar(value="自动匹配当前车辆 · 学习时暂停真实转发，完成后恢复")
-        ttk.Label(box, textvariable=self.learning_text, wraplength=690, style="Sub.TLabel").pack(anchor="w", pady=(0, 12))
         self.status = tk.StringVar(value="就绪 · 配置接收端地址后开始适配")
         ttk.Label(box, textvariable=self.status, wraplength=690).pack(anchor="w", pady=(0, 7))
         self.car = tk.StringVar(value="车辆 / 赛道：—")
@@ -92,7 +88,7 @@ class App:
         self.error = tk.StringVar()
         ttk.Label(box, textvariable=self.error, foreground="#ffbd86", wraplength=690).pack(anchor="w")
         ttk.Separator(box).pack(fill="x", pady=13)
-        ttk.Label(box, text="接收端选择 Forza Horizon，IP / 端口与此处一致。\n游戏未启动时自动等待；暂停、退出或数据停更后自动停止驾驶数据。\n功率、扭矩等缺失字段为协议占位；动力学习会短暂发送模拟数据。", style="Sub.TLabel", wraplength=690).pack(anchor="w")
+        ttk.Label(box, text="接收端选择 Forza Horizon，IP / 端口与此处一致。\n游戏未启动时自动等待；暂停、退出或数据停更后自动停止驾驶数据。\n车辆切换时自动解包悬挂、转向、怠速、驱动形式和动力曲线。", style="Sub.TLabel", wraplength=690).pack(anchor="w")
         # Tk geometry uses pixels while fonts follow Windows DPI. Fit requested content.
         root.update_idletasks()
         width = max(760, box.winfo_reqwidth())
@@ -134,27 +130,20 @@ class App:
             save_config(self.path,self.config)
             if self.bridge:self.bridge.config["game_directory"]=directory
 
-    def learn_curve(self):
-        try:
-            if not self.bridge:raise ValueError("请先开始适配并进入 AC 赛道，自动识别当前车辆。")
-            self.bridge.learn()
-        except Exception as exc:
-            messagebox.showerror("无法学习",str(exc),parent=self.root)
-
     def help(self):
         import os
-        path = self.base / "README.md"
+        import sys
+        resource_base = Path(getattr(sys, "_MEIPASS", self.base))
+        path = resource_base / "help.html"
         try:
             os.startfile(path)
         except OSError:
-            messagebox.showinfo("使用说明", "请打开项目目录内的 README.md。", parent=self.root)
+            messagebox.showinfo("使用说明", "无法打开程序目录内的 help.html。", parent=self.root)
 
     def refresh(self):
         if self.bridge:
             snap = self.bridge.get_snapshot()
             f = snap["frame"]
-            self.learn_button.configure(state="disabled" if snap.get("learning") else "normal")
-            self.learning_text.set(snap.get("learning_result", "自动匹配当前车辆 · 学习时暂停真实转发"))
             self.status.set(snap["status"])
             self.car.set(f"车辆：{f['car'] or '—'}    赛道：{f['track'] or '—'}")
             active = f["active"] and snap["running"]
