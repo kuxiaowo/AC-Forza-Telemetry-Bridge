@@ -1,0 +1,9 @@
+name: ac-forza-bridge
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - tk
+  - pip:
+      - pyinstaller==6.21.0

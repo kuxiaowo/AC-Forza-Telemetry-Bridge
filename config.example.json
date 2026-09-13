@@ -1,0 +1,12 @@
+{
+  "host": "127.0.0.1",
+  "port": 8094,
+  "hz": 60,
+  "packet_format": "fh4",
+  "stale_seconds": 1.5,
+  "invert_clutch": true,
+  "invert_steer": false,
+  "steer_scale": 1.0,
+  "fallback_max_rpm": 9000,
+  "curve_data_source": "auto"
+}
