@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.exe
+*.dll
+*.spec
+_internal/
+build-work/
+dist/
+build/
+logs/
+learning_records/
+config.json
+.pytest_cache/
+.idea/
+.vscode/
