@@ -54,7 +54,3 @@ python -m unittest discover -s tests -v
 ```
 
 `build.ps1` 会先运行测试，再在本地生成 PyInstaller onedir 产物；构建产物由 `.gitignore` 排除。
-
-## 许可
-
-项目采用 GPL-2.0。`acbridge/vendor/acd.py` 来自 [philippkosarev/acd](https://github.com/philippkosarev/acd)，其原许可证保存在 `acbridge/vendor/ACD-LICENSE.txt`。
