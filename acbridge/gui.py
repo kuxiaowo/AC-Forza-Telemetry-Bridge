@@ -6,12 +6,12 @@ from .runtime import Bridge, load_config, save_config, DEFAULTS
 
 
 class App:
-    def __init__(self, root, base):
+    def __init__(self, root, base, game=None):
         self.root, self.base = root, base
         self.path = base / "config.json"
         self.bridge = None
         self.closing = False
-        root.title("神力科莎 → Forza · 实时遥测适配器（8094）")
+        root.title("AC1 / ACC → Forza · 实时遥测适配器")
         root.geometry("760x670")
         root.minsize(700, 640)
         root.configure(bg="#101723")
@@ -27,21 +27,32 @@ class App:
         style.map("TCheckbutton", background=[("active", "#26384c")])
         style.configure("TEntry", padding=5)
         box = ttk.Frame(root, padding=22)
+        self.content = box
         box.pack(fill="both", expand=True)
         ttk.Label(box, text="ASSETTO CORSA  →  DASHBOARD", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(box, text="AC1 共享内存  /  Forza Horizon UDP  /  本机独立配置", style="Sub.TLabel").pack(anchor="w", pady=(5, 16))
+        ttk.Label(box, text="AC1 / ACC 共享内存  /  Forza Horizon UDP  /  本机独立配置", style="Sub.TLabel").pack(anchor="w", pady=(5, 16))
         try:
             self.config = load_config(self.path)
         except (ValueError, OSError, TypeError) as exc:
             self.config = dict(DEFAULTS)
             messagebox.showwarning("配置读取失败", f"{exc}\n已显示默认值；点击开始时才会保存。", parent=root)
+        if game is not None:
+            self.config["game"] = game
+        self.selected_game = self.config["game"]
+        source = ttk.Frame(box)
+        source.pack(fill="x", pady=(0, 10))
+        ttk.Label(source, text="游戏数据源").pack(side="left", padx=(0, 12))
+        self.game = tk.StringVar(value="ACC" if self.selected_game == "acc" else "AC1")
+        source_combo = ttk.Combobox(source, textvariable=self.game, values=("AC1", "ACC"), width=8, state="readonly")
+        source_combo.pack(side="left")
+        source_combo.bind("<<ComboboxSelected>>", self.change_game)
         fields = ttk.Frame(box)
         fields.pack(fill="x")
         self.host = tk.StringVar(value=self.config["host"])
         self.port = tk.StringVar(value=str(self.config["port"]))
         self.hz = tk.StringVar(value=str(self.config["hz"]))
         self.fmt = tk.StringVar(value=self.config["packet_format"])
-        self.inputs = []
+        self.inputs = [source_combo]
         for col, (label, var, width) in enumerate((("目标 IPv4", self.host, 17), ("UDP 端口", self.port, 8), ("频率 Hz", self.hz, 7))):
             ttk.Label(fields, text=label).grid(row=0, column=col, sticky="w", padx=(0, 14))
             entry = ttk.Entry(fields, textvariable=var, width=width)
@@ -54,9 +65,9 @@ class App:
         options = ttk.Frame(box)
         options.pack(fill="x", pady=14)
         self.sim = tk.BooleanVar(value=False)
-        self.clutch = tk.BooleanVar(value=self.config["invert_clutch"])
+        self.clutch = tk.BooleanVar(value=self.config["acc_invert_clutch" if self.selected_game == "acc" else "invert_clutch"])
         self.steer = tk.BooleanVar(value=self.config["invert_steer"])
-        for text, var in (("模拟测试（非实车）", self.sim), ("离合反向（AC 默认）", self.clutch), ("转向反向", self.steer)):
+        for text, var in (("模拟测试（非实车）", self.sim), ("离合反向", self.clutch), ("转向反向", self.steer)):
             cb = ttk.Checkbutton(options, text=text, variable=var)
             cb.pack(side="left", padx=(0, 15))
             self.inputs.append(cb)
@@ -67,7 +78,10 @@ class App:
         self.stop_button = ttk.Button(buttons, text="停止", command=self.stop, state="disabled")
         self.stop_button.pack(side="left", padx=(0, 10))
         ttk.Button(buttons, text="使用说明", command=self.help).pack(side="left")
-        ttk.Button(box, text="游戏目录…", command=self.choose_game).pack(anchor="w", pady=(0, 6))
+        self.game_directory_button = ttk.Button(box, text="AC1 游戏目录…", command=self.choose_game)
+        self.game_directory_button.pack(anchor="w", pady=(0, 6))
+        self.inputs.append(self.game_directory_button)
+        self.game_directory_button.configure(state="disabled" if self.selected_game == "acc" else "normal")
         self.status = tk.StringVar(value="就绪 · 配置接收端地址后开始适配")
         ttk.Label(box, textvariable=self.status, wraplength=690).pack(anchor="w", pady=(0, 7))
         self.car = tk.StringVar(value="车辆 / 赛道：—")
@@ -75,9 +89,11 @@ class App:
         values = ttk.Frame(box)
         values.pack(fill="x", pady=18)
         self.value_vars = {}
-        for col, (key, label) in enumerate((("speed", "速度 km/h"), ("rpm", "发动机 RPM"), ("gear", "挡位"), ("fuel", "燃油 L"))):
+        self.fuel_label = tk.StringVar(value="燃油原值（ACC）" if self.selected_game == "acc" else "燃油 L")
+        for col, (key, label) in enumerate((("speed", "速度 km/h"), ("rpm", "发动机 RPM"), ("gear", "挡位"), ("fuel", "燃油"))):
             values.columnconfigure(col, weight=1)
-            ttk.Label(values, text=label, style="Sub.TLabel").grid(row=0, column=col, sticky="w")
+            label_options = {"textvariable": self.fuel_label} if key == "fuel" else {"text": label}
+            ttk.Label(values, **label_options, style="Sub.TLabel").grid(row=0, column=col, sticky="w")
             var = tk.StringVar(value="—")
             ttk.Label(values, textvariable=var, style="Value.TLabel").grid(row=1, column=col, sticky="w", pady=5)
             self.value_vars[key] = var
@@ -88,20 +104,26 @@ class App:
         self.error = tk.StringVar()
         ttk.Label(box, textvariable=self.error, foreground="#ffbd86", wraplength=690).pack(anchor="w")
         ttk.Separator(box).pack(fill="x", pady=13)
-        ttk.Label(box, text="接收端选择 Forza Horizon，IP / 端口与此处一致。\n游戏未启动时自动等待；暂停、退出或数据停更后自动停止驾驶数据。\n车辆切换时自动解包悬挂、转向、怠速、驱动形式和动力曲线。", style="Sub.TLabel", wraplength=690).pack(anchor="w")
+        ttk.Label(box, text="接收端选择 Forza Horizon，IP / 端口与此处一致。\n请选择正确游戏；AC1 与 ACC 不可同时运行。暂停、退出或停更后停止驾驶数据。\nAC1 自动读取车辆文件；ACC 基础适配中，动力、归一化悬挂和运动坐标暂为零。", style="Sub.TLabel", wraplength=690).pack(anchor="w")
         # Tk geometry uses pixels while fonts follow Windows DPI. Fit requested content.
-        root.update_idletasks()
-        width = max(760, box.winfo_reqwidth())
-        height = max(670, box.winfo_reqheight())
-        root.minsize(width, height)
-        root.geometry(f"{width}x{height}")
+        self.fit_content()
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(100, self.refresh)
+
+    def fit_content(self):
+        self.root.update_idletasks()
+        width = max(760, self.content.winfo_reqwidth())
+        height = max(670, self.content.winfo_reqheight())
+        self.root.minsize(width, height)
+        if self.root.winfo_width() < width or self.root.winfo_height() < height:
+            self.root.geometry(f"{max(width, self.root.winfo_width())}x{max(height, self.root.winfo_height())}")
 
     def start(self):
         try:
             cfg = {**self.config, "host": self.host.get().strip(), "port": int(self.port.get()), "hz": int(self.hz.get()),
-                   "packet_format": self.fmt.get(), "invert_clutch": self.clutch.get(), "invert_steer": self.steer.get()}
+                   "packet_format": self.fmt.get(), "game": self.selected_game,
+                   "acc_invert_clutch" if self.selected_game == "acc" else "invert_clutch": self.clutch.get(),
+                   "invert_steer": self.steer.get()}
             bridge = Bridge(cfg, self.sim.get(), base=self.base)
             save_config(self.path, bridge.config)
             self.config, self.bridge = bridge.config, bridge
@@ -119,6 +141,15 @@ class App:
             self.bridge.stop()
             self.stop_button.configure(state="disabled")
             self.status.set("正在停止…")
+
+    def change_game(self, _event=None):
+        key = "acc_invert_clutch" if self.selected_game == "acc" else "invert_clutch"
+        self.config[key] = self.clutch.get()
+        self.selected_game = "acc" if self.game.get() == "ACC" else "ac"
+        key = "acc_invert_clutch" if self.selected_game == "acc" else "invert_clutch"
+        self.clutch.set(self.config[key])
+        self.fuel_label.set("燃油原值（ACC）" if self.selected_game == "acc" else "燃油 L")
+        self.game_directory_button.configure(state="disabled" if self.selected_game == "acc" else "normal")
 
     def choose_game(self):
         directory=filedialog.askdirectory(title="选择 Assetto Corsa 游戏根目录", parent=self.root)
@@ -149,17 +180,21 @@ class App:
             active = f["active"] and snap["running"]
             for key, value in (("speed", f"{f['speed_kmh']:.1f}"), ("rpm", f"{f['rpm']:.0f}"),
                                ("gear", "R" if f["gear"] == 0 else "N" if f["gear"] == 11 else str(f["gear"])),
-                               ("fuel", f"{f['fuel_litres']:.1f}")):
+                               ("fuel", f"{f['fuel_quantity']:.1f}")):
                 self.value_vars[key].set(value if active else "—")
             self.pedals.set("    ".join(f"{name} {f[key]*100:.0f}%" for name, key in
                             (("油门", "throttle"), ("刹车", "brake"), ("离合", "clutch"), ("转向", "steer"))) if active else "油门 —    刹车 —    离合 —    转向 —")
             self.stats.set(f"已发送 {snap['sent']:,} 包 · {snap['actual_hz']:.1f} Hz · {self.config['host']}:{self.config['port']} · UDP 无接收确认")
-            self.error.set(snap["error"] or "；".join(f["notes"]))
+            notes = snap["error"] or "；".join(f["notes"])
+            if notes != self.error.get():
+                self.error.set(notes)
+                self.fit_content()
             if self.bridge.thread and not self.bridge.thread.is_alive():
                 self.start_button.configure(state="normal")
                 self.stop_button.configure(state="disabled")
                 for widget in self.inputs:
                     widget.configure(state="readonly" if isinstance(widget, ttk.Combobox) else "normal")
+                self.game_directory_button.configure(state="disabled" if self.selected_game == "acc" else "normal")
                 if self.closing:
                     self.root.destroy()
                     return

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AC → Forza 遥测适配器使用说明</title>
+  <title>AC1 / ACC → Forza 遥测适配器使用说明</title>
   <style>
     :root { color-scheme: dark; --bg:#0c121c; --panel:#131d2a; --line:#2a3a4e; --text:#e7eef7; --muted:#9fb0c5; --cyan:#61ddd0; --green:#63d88c; --amber:#ffbd6b; --red:#ff7f87; }
     * { box-sizing:border-box; }
@@ -36,25 +36,42 @@
 </head>
 <body><main>
   <header>
-    <h1>Assetto Corsa → Forza Horizon 遥测适配器</h1>
+    <h1>AC1 / ACC → Forza Horizon 遥测适配器</h1>
     <p class="muted">本地使用说明 · 324 字节 Horizon Dash · 默认 60 Hz</p>
-    <nav><a href="#start">开始使用</a><a href="#mapping">完整映射</a><a href="#vehicle">车辆解包</a><a href="#limits">已知限制</a><a href="#trouble">故障排查</a></nav>
+    <nav><a href="#start">开始使用</a><a href="#acc">ACC 基础适配</a><a href="#mapping">AC1 完整映射</a><a href="#vehicle">车辆解包</a><a href="#limits">已知限制</a><a href="#trouble">故障排查</a></nav>
   </header>
 
   <section class="card" id="start">
     <h2>开始使用</h2>
     <ol>
-      <li>启动原版 Assetto Corsa 1，并进入赛道驾驶界面。</li>
+      <li>启动原版 Assetto Corsa 1 或 PC 版 ACC，并进入赛道驾驶界面。两款游戏不可同时运行。</li>
       <li>启动 <code>ACForzaBridge.exe</code>。目标仪表与本机运行时通常使用 <code>127.0.0.1</code>；远程设备则填写其 IPv4 地址。</li>
       <li>让接收端监听与适配器相同的 UDP 端口，默认是 <code>8094</code>，数据格式选择 Forza Horizon / Horizon Dash。</li>
-      <li>点击“开始适配”。显示“已连接 AC”后，程序持续发送数据；暂停、回放、退出赛道或共享内存停更时自动发送非比赛状态。</li>
+      <li>选择对应的“游戏数据源”，点击“开始适配”。显示“已连接 AC”或“已连接 ACC”后持续发送数据；暂停、回放、退出赛道或共享内存停更时自动发送非比赛状态。ACC 调校菜单也暂停驾驶数据。</li>
     </ol>
     <p>程序优先使用手动选择的游戏目录；否则读取 Steam 注册表和 <code>libraryfolders.vdf</code>，并检查 C:～H: 下的标准 Steam 路径。无法唯一匹配时，点击“游戏目录…”选择包含 <code>content/cars</code> 的 AC 根目录。</p>
     <p class="note">“模拟测试”只验证发送链路，不代表真实车辆数据。UDP 本身没有接收确认；包数增加只证明本机发送调用成功。</p>
   </section>
 
+  <section class="card" id="acc">
+    <h2>ACC 基础适配</h2>
+    <p>在窗口选择 ACC，或使用 <code>python main.py --headless --game acc --snapshot tmp/acc-status.json</code>。ACC 无需选择安装目录，也不会读取 AC1 的 data.acd。</p>
+    <p class="note">已通过合成数据、真实 Windows 共享内存和本机 UDP 验证，并确认 ACC 静止车辆的实机读取和 UDP 转发。尚未完成动态驾驶动作的逐项标定及真实仪表盘验收，不能保证所有字段的物理语义已验证。下方完整字段表针对 AC1，ACC 以本节为准。</p>
+    <ul>
+      <li>速度、转速、最高转速、挡位、油门、刹车、圈速、圈数、排名、行驶距离、四轮轮速、胎芯温度及原始悬挂行程使用对应共享内存字段。速度转 m/s，圈速转秒，胎温转 °F。</li>
+      <li>ACC 的 <code>steerAngle</code> 按文档直接为 -1～1，不进行 AC1 的转向锁归一化。仍可使用转向反向和 <code>steer_scale</code>。</li>
+      <li>离合默认直接映射，使用独立配置 <code>acc_invert_clutch=false</code>；AC1 的离合反向设置单独保留。实际方向仍需实机确认。</li>
+      <li>燃油显示共享内存“原值”，不标作升数；比例为 <code>fuel / maxFuel</code>，容量缺失时为零，单位待实机确认。</li>
+      <li>功率、扭矩、怠速和归一化悬挂为零；驱动形式的零值仅为占位（接收端可能显示 FWD）。ACC 文档将最大功率、最大扭矩和最大悬挂行程列为未使用字段。依赖这些量的动力曲线、红线学习尚不支持。</li>
+      <li>未经实机标定的加速度、速度向量、角速度、姿态、世界坐标及增压暂不发送，相应 Forza 字段为零。原始值在诊断快照 <code>frame.source_data</code> 中保留；玩家坐标按 <code>carID</code> 匹配 <code>playerCarID</code>，缺失或不唯一时为 null。</li>
+      <li>ACC 车型编号使用独立命名空间，避免与同名 AC1 车型共用接收端档案。PI 仍为兼容占位 1。</li>
+    </ul>
+    <p>原始运动和踏板记录：<code>python -m tools.record_motion --game acc --seconds 60 --output tmp/acc-motion.csv</code>。按直行加速、制动、左右转向、换挡及离合动作分段记录，供方向和单位标定。</p>
+    <p class="muted">接口依据：Kunos Shared Memory v1.8.12 文档，<a href="https://www.assettocorsamods.net/threads/doc-shared-memory-reference-acc.3061/">转载来源</a>。不能据此宣称已完成本机游戏版本的实机认证。</p>
+  </section>
+
   <section class="card" id="mapping">
-    <h2>完整字段映射</h2>
+    <h2>完整字段映射（AC1）</h2>
     <div class="legend"><span class="ok">● 直接/等价</span><span class="convert">● 需要转换或估算</span><span class="none">● 无可靠映射，置零</span></div>
     <div class="table-wrap"><table>
       <thead><tr><th>Forza 偏移/字段</th><th>AC 来源</th><th>状态</th><th>适配器操作</th></tr></thead>
@@ -111,7 +128,7 @@
   </section>
 
   <section class="card" id="vehicle">
-    <h2>车辆解包与计算</h2>
+    <h2>车辆解包与计算（仅 AC1）</h2>
     <p>每次车辆、赛道或会话身份变化时，适配器找到 <code>content/cars/&lt;car_id&gt;</code>，从明文 <code>data</code> 或加密容器 <code>data.acd</code> 读取以下内容；不会修改或重新打包游戏文件。</p>
     <ul>
       <li><code>engine.ini</code>：怠速和动力曲线文件名。</li>
@@ -131,11 +148,11 @@
 
   <section class="card" id="trouble">
     <h2>常见问题</h2>
-    <h3>一直显示等待游戏</h3><p>确认运行的是 AC1，且已进入赛道。启动器或主菜单不会持续更新三块共享内存。</p>
+    <h3>一直显示等待游戏</h3><p>确认所选数据源与运行的 AC1 / ACC 一致，且已进入赛道。两款游戏不可同时运行，启动器或主菜单不代表有效驾驶数据。</p>
     <h3>提示无法唯一匹配游戏目录</h3><p>点击“游戏目录…”，选择实际运行的 Assetto Corsa 根目录，不要选择某一辆车的目录。</p>
     <h3>仪表完全没有数据</h3><p>确认 IP、端口一致，接收端选择 Horizon Dash；远程设备还需检查 Windows 防火墙和局域网隔离。</p>
     <h3>离合或转向方向相反</h3><p>AC 默认需要“离合反向”。不同接收端或控制配置若表现相反，可使用界面的离合/转向反向选项。</p>
     <h3>功率与车辆标称值不同</h3><p>当前显示的是根据基础全负荷曲线和油门估算的发动机功率，不是轮上实测功率；涡轮和混动车差异会更明显。</p>
   </section>
-  <footer>AC → Forza Telemetry Bridge · 本说明文件随程序离线提供</footer>
+  <footer>AC1 / ACC → Forza Telemetry Bridge · 本说明文件随程序离线提供</footer>
 </main></body></html>

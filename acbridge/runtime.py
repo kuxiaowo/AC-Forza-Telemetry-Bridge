@@ -14,10 +14,11 @@ import time
 
 from .shared_memory import ACReader, MissingGame, BusyFrame, utf16
 from .telemetry import Frame, from_ac, encode, demo_frame
+from .acc import from_acc
 
 DEFAULTS = dict(host="127.0.0.1", port=8094, hz=60, packet_format="fh4",
                 stale_seconds=1.5, invert_clutch=True, invert_steer=False,
-                steer_scale=1.0, fallback_max_rpm=9000)
+                steer_scale=1.0, fallback_max_rpm=9000, game="ac", acc_invert_clutch=False)
 
 
 def validate(config):
@@ -36,11 +37,13 @@ def validate(config):
         if not math.isfinite(value) or not low <= value <= high:
             raise ValueError(f"{name} 必须在 {low}～{high} 之间。")
         result[name] = value
-    for name in ("invert_clutch", "invert_steer"):
+    for name in ("invert_clutch", "invert_steer", "acc_invert_clutch"):
         if not isinstance(result[name], bool):
             raise ValueError(f"{name} 必须为 true 或 false。")
     if result["packet_format"] not in ("fh4", "fh5"):
         raise ValueError("packet_format 必须为 fh4 或 fh5。")
+    if result["game"] not in ("ac", "acc"):
+        raise ValueError("game 必须为 ac 或 acc。")
     return result
 
 
@@ -102,11 +105,12 @@ class Bridge:
         self.vehicle_fields_note = ""
         self.config = validate(config)
         self.simulated = simulated
-        self.reader = reader if reader is not None else ACReader()
+        self.reader = reader if reader is not None else ACReader(game=self.config["game"])
         self.stop_event = threading.Event()
         self.thread = None
         self.lock = threading.Lock()
-        self.snapshot = dict(status="未启动", running=False, sent=0, actual_hz=0., frame=asdict(Frame()), error="")
+        self.snapshot = dict(status="未启动", running=False, sent=0, actual_hz=0.,
+                             frame=asdict(Frame(game=self.config["game"])), error="")
         self.logger = logging.getLogger("acbridge")
 
     def get_snapshot(self):
@@ -143,7 +147,7 @@ class Bridge:
         active_elapsed = 0.
         last_tick = start
         was_active = False
-        frame = Frame()
+        frame = Frame(game=cfg["game"])
         self.publish(running=True, error="")
         try:
             guard = PortGuard(*target)
@@ -154,28 +158,32 @@ class Bridge:
                 if self.simulated:
                     frame = demo_frame()
                 elif now < reopen_at:
-                    frame = Frame(status="等待游戏重新连接")
+                    frame = Frame(game=cfg["game"], status="等待游戏重新连接")
                 else:
                     try:
                         p, g, s = self.reader.read()
                         version = utf16(s.acVersion)
                         if not version.startswith("1.") or not utf16(s.carModel):
-                            raise MissingGame("等待原版 AC 的有效车辆数据（仅支持 AC1）")
+                            raise MissingGame(f"等待 {cfg['game'].upper()} 的有效车辆数据")
                         ids = (p.packetId, g.packetId)
                         if ids != last_ids:
                             last_ids, last_change = ids, now
                         if now - last_change > cfg["stale_seconds"]:
                             raise MissingGame("游戏数据已停止更新")
-                        frame = from_ac(p, g, s, cfg, vehicle_fields=self.vehicle_fields)
-                        new_identity = (frame.car, frame.track, g.session)
+                        if cfg["game"] == "acc":
+                            frame = from_acc(p, g, s, cfg)
+                        else:
+                            frame = from_ac(p, g, s, cfg, vehicle_fields=self.vehicle_fields)
+                        new_identity = (cfg["game"], frame.car, frame.track, g.session,
+                                        g.sessionIndex if cfg["game"] == "acc" else None)
                         if new_identity != identity:
                             # Separate datasets when changing cars / tracks, even during a live session.
                             if identity is not None:
-                                sock.sendto(encode(Frame(), int(now*1000), cfg["packet_format"]), target)
+                                sock.sendto(encode(Frame(game=cfg["game"]), int(now*1000), cfg["packet_format"]), target)
                             identity, active_elapsed = new_identity, 0.
                             self.vehicle_fields = {}
                             self.vehicle_fields_note = ""
-                            if self.base is not None:
+                            if self.base is not None and cfg["game"] == "ac":
                                 try:
                                     from .vehicle_curve import find_car, protocol_fields
                                     directory = find_car(frame.car, cfg)
@@ -185,18 +193,19 @@ class Bridge:
                                 except (ValueError, OSError, KeyError) as exc:
                                     self.vehicle_fields_note = f"车辆配置字段未识别：{exc}"
                                     self.logger.warning(self.vehicle_fields_note)
-                            frame = from_ac(p, g, s, cfg, vehicle_fields=self.vehicle_fields)
+                            if cfg["game"] == "ac":
+                                frame = from_ac(p, g, s, cfg, vehicle_fields=self.vehicle_fields)
                         if self.vehicle_fields_note:
                             frame.notes.append(self.vehicle_fields_note)
                     except BusyFrame:
                         self.stop_event.wait(1/cfg["hz"])
                         continue
                     except MissingGame as exc:
-                        frame = Frame(status=str(exc))
+                        frame = Frame(game=cfg["game"], status=str(exc))
                         self.reader.close()
                         reopen_at = now + .5
                     except OSError as exc:
-                        frame = Frame(status="共享内存读取失败")
+                        frame = Frame(game=cfg["game"], status="共享内存读取失败")
                         self.publish(error=str(exc))
                         self.reader.close()
                         reopen_at = now + 1.
@@ -206,7 +215,7 @@ class Bridge:
                     active_elapsed += dt
                 was_active, last_tick = frame.active, now
                 # Inactive packets zero driving values, while UI retains connection metadata.
-                outgoing = frame if frame.active else Frame(car=frame.car, max_rpm=frame.max_rpm)
+                outgoing = frame if frame.active else Frame(game=frame.game, car=frame.car, max_rpm=frame.max_rpm)
                 # Stable across bridge restarts/mode switches: the receiver treats a
                 # decreasing timestamp as a game restart and stops listening.
                 sock.sendto(encode(outgoing, int(now*1000), cfg["packet_format"], active_elapsed), target)
@@ -231,7 +240,7 @@ class Bridge:
             if sock:
                 try:
                     for _ in range(3):
-                        sock.sendto(encode(Frame(), int(time.monotonic()*1000), cfg["packet_format"]), target)
+                        sock.sendto(encode(Frame(game=cfg["game"]), int(time.monotonic()*1000), cfg["packet_format"]), target)
                 except OSError:
                     pass
                 sock.close()
@@ -240,4 +249,4 @@ class Bridge:
                 guard.close()
             self.publish(running=False, actual_hz=0.)
             if self.stop_event.is_set():
-                self.publish(status="已停止", frame=asdict(Frame()))
+                self.publish(status="已停止", frame=asdict(Frame(game=cfg["game"])))

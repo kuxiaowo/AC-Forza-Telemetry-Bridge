@@ -1,2 +1,2 @@
-"""Assetto Corsa to Forza Horizon telemetry bridge."""
-__version__ = "1.1.0"
+"""Assetto Corsa / Competizione to Forza Horizon telemetry bridge."""
+__version__ = "1.2.0"
