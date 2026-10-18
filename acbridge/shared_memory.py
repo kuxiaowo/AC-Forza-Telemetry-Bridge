@@ -8,6 +8,7 @@ import ctypes as C
 from ctypes import wintypes as W
 import os
 import struct
+import time
 
 I, F, U = C.c_int32, C.c_float, C.c_uint16
 
@@ -82,6 +83,49 @@ class BusyFrame(OSError):
     pass
 
 
+def running_games():
+    """Identify producers of the shared acpmf_* names, without dependencies."""
+    if os.name != "nt":
+        raise OSError("游戏进程识别仅支持 Windows。")
+
+    class ProcessEntry(C.Structure):
+        _fields_ = [("size", W.DWORD), ("usage", W.DWORD), ("pid", W.DWORD),
+                    ("heap", C.c_size_t), ("module", W.DWORD), ("threads", W.DWORD),
+                    ("parent", W.DWORD), ("priority", W.LONG), ("flags", W.DWORD),
+                    ("exe", W.WCHAR * 260)]
+
+    dll = C.WinDLL("kernel32", use_last_error=True)
+    dll.CreateToolhelp32Snapshot.argtypes = [W.DWORD, W.DWORD]
+    dll.CreateToolhelp32Snapshot.restype = W.HANDLE
+    for name in ("Process32FirstW", "Process32NextW"):
+        func = getattr(dll, name)
+        func.argtypes = [W.HANDLE, C.POINTER(ProcessEntry)]
+        func.restype = W.BOOL
+    dll.CloseHandle.argtypes = [W.HANDLE]
+    dll.CloseHandle.restype = W.BOOL
+    handle = dll.CreateToolhelp32Snapshot(2, 0)
+    if handle == C.c_void_p(-1).value:
+        raise C.WinError(C.get_last_error())
+    games = set()
+    try:
+        entry = ProcessEntry()
+        entry.size = C.sizeof(entry)
+        found = dll.Process32FirstW(handle, C.byref(entry))
+        while found:
+            exe = entry.exe.lower()
+            if exe in ("acs.exe", "acs_x86.exe"):
+                games.add("ac")
+            elif exe == "ac2-win64-shipping.exe":
+                games.add("acc")
+            found = dll.Process32NextW(handle, C.byref(entry))
+        error = C.get_last_error()
+        if error != 18:  # ERROR_NO_MORE_FILES
+            raise C.WinError(error)
+    finally:
+        dll.CloseHandle(handle)
+    return games
+
+
 def kernel():
     if os.name != "nt":
         raise OSError("共享内存读取仅支持 Windows。")
@@ -134,14 +178,34 @@ class ReadPage:
 
 
 class ACReader:
-    def __init__(self, prefix="acpmf_"):
+    def __init__(self, prefix="acpmf_", game="ac"):
+        if game not in ("ac", "acc"):
+            raise ValueError("游戏数据源必须为 ac 或 acc")
         self.prefix = prefix
+        self.game = game
         self.pages = []
+        self.next_process_check = 0.
 
     def read(self):
+        # AC1 and ACC publish the same names with different ABIs. Explicit
+        # selection alone cannot protect against reading the other game's pages.
+        if self.prefix == "acpmf_" and time.monotonic() >= self.next_process_check:
+            games = running_games()
+            if len(games) > 1:
+                raise MissingGame("AC1 与 ACC 同时运行，共享内存冲突，请只保留所选游戏")
+            if games != {self.game}:
+                raise MissingGame(f"等待所选游戏 {self.game.upper()} 启动并进入赛道")
+            # Toolhelp walks the full system process list; keep it out of the
+            # 60–240 Hz hot path. Reconnects always perform a fresh check.
+            self.next_process_check = time.monotonic() + .25
         if not self.pages:
             try:
-                for suffix, layout in (("physics", Physics), ("graphics", Graphics), ("static", Static)):
+                if self.game == "acc":
+                    from .acc import ACCPhysics, ACCGraphics, ACCStatic
+                    layouts = (ACCPhysics, ACCGraphics, ACCStatic)
+                else:
+                    layouts = (Physics, Graphics, Static)
+                for suffix, layout in zip(("physics", "graphics", "static"), layouts):
                     self.pages.append(ReadPage(self.prefix + suffix, layout))
             except Exception:
                 self.close()
@@ -155,3 +219,4 @@ class ACReader:
         for page in self.pages:
             page.close()
         self.pages = []
+        self.next_process_check = 0.

@@ -9,7 +9,8 @@ from acbridge.runtime import Bridge, load_config, setup_logging
 
 
 def main():
-    parser = argparse.ArgumentParser(description="AC1 → Forza Horizon UDP bridge")
+    parser = argparse.ArgumentParser(description="AC1 / ACC → Forza Horizon UDP bridge")
+    parser.add_argument("--game", choices=("ac", "acc"), help="覆盖配置中的游戏数据源，默认保留配置值（旧配置为 ac）")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--simulate", action="store_true", help="仅用于显式模拟测试")
     parser.add_argument("--seconds", type=float, default=0, help="无界面模式运行秒数，0 为持续运行")
@@ -19,7 +20,10 @@ def main():
     base = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
     setup_logging(base)
     if args.headless:
-        bridge = Bridge(load_config(args.config or base / "config.json"), args.simulate, base=base)
+        config = load_config(args.config or base / "config.json")
+        if args.game is not None:
+            config["game"] = args.game
+        bridge = Bridge(config, args.simulate, base=base)
         bridge.start()
         started = time.monotonic()
         try:
@@ -50,7 +54,7 @@ def main():
         except (OSError, AttributeError):
             pass
     root = tk.Tk()
-    app = App(root, base)
+    app = App(root, base, game=args.game)
     root.mainloop()
     return 0
 

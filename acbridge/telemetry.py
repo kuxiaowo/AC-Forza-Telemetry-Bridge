@@ -30,6 +30,7 @@ def gear_byte(ac_gear):
 
 @dataclass
 class Frame:
+    game: str = "ac"
     active: bool = False
     car: str = ""
     track: str = ""
@@ -48,6 +49,8 @@ class Frame:
     steer: float = 0.0
     fuel_fraction: float = 0.0
     fuel_litres: float = 0.0
+    fuel_quantity: float = 0.0
+    fuel_unit: str = "L"
     boost_psi: float = 0.0
     temps_c: tuple = (0., 0., 0., 0.)
     acc: tuple = (0., 0., 0.)
@@ -67,6 +70,7 @@ class Frame:
     race_position: int = 0
     distance: float = 0.0
     notes: list = field(default_factory=list)
+    source_data: dict = field(default_factory=dict)
 
 
 def from_ac(p, g, s, config, vehicle_fields=None):
@@ -116,6 +120,7 @@ def from_ac(p, g, s, config, vehicle_fields=None):
         clutch=clamp(clutch, 0, 1), steer=clamp(steer, -1, 1),
         fuel_fraction=clamp(p.fuel / s.maxFuel, 0, 1) if s.maxFuel > 0 else 0.,
         fuel_litres=max(0., finite(p.fuel)), boost_psi=clamp(p.turboBoost * 14.5037738, 0, 1000),
+        fuel_quantity=max(0., finite(p.fuel)),
         temps_c=tuple(finite(v) for v in p.tyreCoreTemperature),
         # AC local X points left; Forza local X points right. AC angular rates
         # have the opposite sign to the corresponding heading/pitch/roll rates.
@@ -159,7 +164,8 @@ def encode(frame, timestamp_ms, packet_format="fh4", race_time=0.0):
     floats(100, frame.wheel_speed)
     floats(196, frame.suspension)
     # Stable synthetic identity avoids mixing different AC cars. Not a Forza car ID.
-    ordinal = 1000000000 + zlib.crc32(frame.car.encode("utf-8")) % 1000000000 if frame.car else 0
+    identity = f"acc:{frame.car}" if frame.game == "acc" else frame.car
+    ordinal = 1000000000 + zlib.crc32(identity.encode("utf-8")) % 1000000000 if frame.car else 0
     put(212, "i", ordinal)
     # Compatibility identity ONLY: Forza rejects vehicle profiles with PI <= 0.
     # This is not an AC performance rating. Keep this experiment's profiles isolated.
@@ -178,9 +184,9 @@ def encode(frame, timestamp_ms, packet_format="fh4", race_time=0.0):
 
 
 def demo_frame():
-    return Frame(active=True, car="AC_BRIDGE_SIMULATION", track="模拟数据 / 非游戏",
+    return Frame(game="simulation", active=True, car="AC_BRIDGE_SIMULATION", track="模拟数据 / 非游戏",
                  status="模拟测试（不是实车数据）", speed_kmh=123.4, rpm=4321, max_rpm=8000,
                  gear=4, throttle=.5, brake=.25, clutch=.25, steer=-.5,
-                 fuel_fraction=.5, fuel_litres=25, temps_c=(70., 80., 90., 100.),
+                 fuel_fraction=.5, fuel_litres=25, fuel_quantity=25, temps_c=(70., 80., 90., 100.),
                  acc=(9.80665, 0., -4.903325), velocity=(0., 0., 123.4/3.6),
                  best_lap=89.123, last_lap=90.456, current_lap=12.345, laps=3, race_position=2)
