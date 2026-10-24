@@ -18,7 +18,7 @@ from .acc import from_acc
 
 DEFAULTS = dict(host="127.0.0.1", port=8094, hz=60, packet_format="fh4",
                 stale_seconds=1.5, invert_clutch=True, invert_steer=False,
-                steer_scale=1.0, fallback_max_rpm=9000, game="ac", acc_invert_clutch=False)
+                steer_scale=1.0, fallback_max_rpm=9000, game="ac", acc_invert_clutch=True)
 
 
 def validate(config):

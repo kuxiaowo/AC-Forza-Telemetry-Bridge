@@ -170,7 +170,7 @@ class ACCAssetTests(unittest.TestCase):
 class ACCLearningMappingTests(unittest.TestCase):
     def test_reference_normalization_reaches_udp_and_retains_original_metres(self):
         p, g, s = fixture()
-        p.clutch = 0.  # real ACC sample with engine running, no clutch input
+        p.clutch = 1.  # live driving with drivetrain engaged; Forza pedal released
         fields = dict(suspension_reference_m=(.08, .08, .1, .1), engine_idle_rpm=900)
         p.suspensionTravel[:] = (.02, .04, .025, .05)
         frame = from_acc(p, g, s, DEFAULTS, fields)
