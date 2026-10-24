@@ -216,10 +216,14 @@ class ACCRuntimeTests(unittest.TestCase):
                     page.write(bytes(value))
                     pages.append(page)
                 before = [page[:] for page in pages]
-                with patch("acbridge.vehicle_curve.find_car", side_effect=AssertionError("ACC must not scan AC1 files")):
+                with patch("acbridge.vehicle_curve.find_car", side_effect=AssertionError("ACC must not scan AC1 files")), \
+                        patch("acbridge.acc_vehicle.ACCVehicleData.read", return_value=dict(
+                            suspension_reference_m=(.08, .08, .1, .1), engine_idle_rpm=900)):
                     bridge.start()
                     live = receive(lambda d: struct.unpack_from("<i", d)[0] == 1)
                     self.assertEqual(struct.unpack_from("<f", live, 256)[0], 50)
+                    self.assertGreater(min(struct.unpack_from("<4f", live, 68)), .1)
+                    self.assertEqual(struct.unpack_from("<f", live, 12)[0], 900)
                     self.assertEqual([page[:] for page in pages], before)
                     self.assertEqual(bridge.get_snapshot()["frame"]["game"], "acc")
                     g.status = 3

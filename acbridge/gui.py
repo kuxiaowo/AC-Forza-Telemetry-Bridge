@@ -78,10 +78,9 @@ class App:
         self.stop_button = ttk.Button(buttons, text="停止", command=self.stop, state="disabled")
         self.stop_button.pack(side="left", padx=(0, 10))
         ttk.Button(buttons, text="使用说明", command=self.help).pack(side="left")
-        self.game_directory_button = ttk.Button(box, text="AC1 游戏目录…", command=self.choose_game)
+        self.game_directory_button = ttk.Button(box, text=f"{self.game.get()} 游戏目录…", command=self.choose_game)
         self.game_directory_button.pack(anchor="w", pady=(0, 6))
         self.inputs.append(self.game_directory_button)
-        self.game_directory_button.configure(state="disabled" if self.selected_game == "acc" else "normal")
         self.status = tk.StringVar(value="就绪 · 配置接收端地址后开始适配")
         ttk.Label(box, textvariable=self.status, wraplength=690).pack(anchor="w", pady=(0, 7))
         self.car = tk.StringVar(value="车辆 / 赛道：—")
@@ -104,7 +103,7 @@ class App:
         self.error = tk.StringVar()
         ttk.Label(box, textvariable=self.error, foreground="#ffbd86", wraplength=690).pack(anchor="w")
         ttk.Separator(box).pack(fill="x", pady=13)
-        ttk.Label(box, text="接收端选择 Forza Horizon，IP / 端口与此处一致。\n请选择正确游戏；AC1 与 ACC 不可同时运行。暂停、退出或停更后停止驾驶数据。\nAC1 自动读取车辆文件；ACC 基础适配中，动力、归一化悬挂和运动坐标暂为零。", style="Sub.TLabel", wraplength=690).pack(anchor="w")
+        ttk.Label(box, text="接收端选择 Forza Horizon，IP / 端口与此处一致。\n请选择正确游戏；AC1 与 ACC 不可同时运行。暂停、退出或停更后停止驾驶数据。\nACC 自动读取当前车型的车辆资源；悬挂使用限位参考区间，详见使用说明。", style="Sub.TLabel", wraplength=690).pack(anchor="w")
         # Tk geometry uses pixels while fonts follow Windows DPI. Fit requested content.
         self.fit_content()
         root.protocol("WM_DELETE_WINDOW", self.close)
@@ -146,20 +145,25 @@ class App:
         key = "acc_invert_clutch" if self.selected_game == "acc" else "invert_clutch"
         self.config[key] = self.clutch.get()
         self.selected_game = "acc" if self.game.get() == "ACC" else "ac"
+        self.config["game"] = self.selected_game
         key = "acc_invert_clutch" if self.selected_game == "acc" else "invert_clutch"
         self.clutch.set(self.config[key])
         self.fuel_label.set("燃油原值（ACC）" if self.selected_game == "acc" else "燃油 L")
-        self.game_directory_button.configure(state="disabled" if self.selected_game == "acc" else "normal")
+        self.game_directory_button.configure(text=f"{self.game.get()} 游戏目录…")
 
     def choose_game(self):
-        directory=filedialog.askdirectory(title="选择 Assetto Corsa 游戏根目录", parent=self.root)
+        directory=filedialog.askdirectory(title=f"选择 {self.game.get()} 游戏根目录", parent=self.root)
         if directory:
-            if not (Path(directory)/"content/cars").is_dir():
-                messagebox.showerror("目录无效", "目录中应包含 content/cars。", parent=self.root)
+            acc = self.selected_game == "acc"
+            valid = (Path(directory)/"AC2/Content/Paks/AC2-WindowsNoEditor.pak").is_file() if acc else (Path(directory)/"content/cars").is_dir()
+            if not valid:
+                expected = "AC2/Content/Paks/AC2-WindowsNoEditor.pak" if acc else "content/cars"
+                messagebox.showerror("目录无效", f"目录中应包含 {expected}。", parent=self.root)
                 return
-            self.config["game_directory"]=directory
+            key = "acc_game_directory" if acc else "game_directory"
+            self.config[key]=directory
             save_config(self.path,self.config)
-            if self.bridge:self.bridge.config["game_directory"]=directory
+            if self.bridge:self.bridge.config[key]=directory
 
     def help(self):
         import os
@@ -194,7 +198,6 @@ class App:
                 self.stop_button.configure(state="disabled")
                 for widget in self.inputs:
                     widget.configure(state="readonly" if isinstance(widget, ttk.Combobox) else "normal")
-                self.game_directory_button.configure(state="disabled" if self.selected_game == "acc" else "normal")
                 if self.closing:
                     self.root.destroy()
                     return

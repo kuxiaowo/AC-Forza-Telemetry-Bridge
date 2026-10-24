@@ -103,6 +103,7 @@ class Bridge:
         self.base = Path(base) if base is not None else None
         self.vehicle_fields = {}
         self.vehicle_fields_note = ""
+        self.acc_vehicle_data = None
         self.config = validate(config)
         self.simulated = simulated
         self.reader = reader if reader is not None else ACReader(game=self.config["game"])
@@ -171,7 +172,7 @@ class Bridge:
                         if now - last_change > cfg["stale_seconds"]:
                             raise MissingGame("游戏数据已停止更新")
                         if cfg["game"] == "acc":
-                            frame = from_acc(p, g, s, cfg)
+                            frame = from_acc(p, g, s, cfg, self.vehicle_fields)
                         else:
                             frame = from_ac(p, g, s, cfg, vehicle_fields=self.vehicle_fields)
                         new_identity = (cfg["game"], frame.car, frame.track, g.session,
@@ -193,6 +194,16 @@ class Bridge:
                                 except (ValueError, OSError, KeyError) as exc:
                                     self.vehicle_fields_note = f"车辆配置字段未识别：{exc}"
                                     self.logger.warning(self.vehicle_fields_note)
+                            elif cfg["game"] == "acc":
+                                try:
+                                    from .acc_vehicle import ACCVehicleData
+                                    if self.acc_vehicle_data is None:
+                                        self.acc_vehicle_data = ACCVehicleData(cfg)
+                                    self.vehicle_fields = self.acc_vehicle_data.read(frame.car)
+                                except (ValueError, OSError, KeyError) as exc:
+                                    self.vehicle_fields_note = f"ACC 车辆参考字段未识别：{exc}"
+                                    self.logger.warning(self.vehicle_fields_note)
+                                frame = from_acc(p, g, s, cfg, self.vehicle_fields)
                             if cfg["game"] == "ac":
                                 frame = from_ac(p, g, s, cfg, vehicle_fields=self.vehicle_fields)
                         if self.vehicle_fields_note:
