@@ -59,7 +59,7 @@ def from_acc(p, g, s, config, vehicle_fields=None):
         "ACC：功率、扭矩、驱动形式缺少可靠来源，使用兼容占位值",
         "ACC：运动坐标及增压单位未经实机标定，相关 Forza 字段暂为零",
         "ACC：燃油显示共享内存原值；比例按原值/容量计算，单位待实机确认",
-        "ACC：离合默认直接映射，发动机未启动时的离合值不用于判断踏板方向",
+        "ACC：离合默认反向，游戏接合值 1 转为 Forza 踏板松开值 0；可单独配置",
     ]
     references = vehicle_fields.get("suspension_reference_m", (0.,) * 4)
     normalized = tuple(clamp(finite(p.suspensionTravel[i]) / references[i], 0, 1)

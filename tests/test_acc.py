@@ -64,7 +64,7 @@ class ACCProtocolTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<iI", data), (1, 1234))
         self.assertEqual(struct.unpack_from("<3f", data, 8), (7000, 0, 6000))
         self.assertEqual(struct.unpack_from("<f", data, 256)[0], 50)
-        self.assertEqual(data[315:321], bytes((128, 64, 191, 0, 3, 64)))
+        self.assertEqual(data[315:321], bytes((128, 64, 64, 0, 3, 64)))
         self.assertEqual(struct.unpack_from("<4f", data, 100), (1, 2, 3, 4))
         for actual, expected in zip(struct.unpack_from("<4f", data, 196), (.02, .03, .04, .05)):
             self.assertAlmostEqual(actual, expected)
@@ -94,10 +94,19 @@ class ACCProtocolTests(unittest.TestCase):
         p, g, s = fixture()
         for ac_clutch in (False, True):
             config = {**DEFAULTS, "invert_clutch": ac_clutch}
-            self.assertEqual(from_acc(p, g, s, config).clutch, .75)
+            self.assertEqual(from_acc(p, g, s, config).clutch, .25)
             self.assertEqual(from_acc(p, g, s, config).steer, .5)
-        frame = from_acc(p, g, s, {**DEFAULTS, "acc_invert_clutch": True, "invert_steer": True})
-        self.assertEqual((frame.clutch, frame.steer), (.25, -.5))
+        frame = from_acc(p, g, s, {**DEFAULTS, "acc_invert_clutch": False, "invert_steer": True})
+        self.assertEqual((frame.clutch, frame.steer), (.75, -.5))
+
+    def test_default_acc_clutch_encodes_engaged_as_released_for_redline_learning(self):
+        p, g, s = fixture()
+        # Live ACC driving: raw 1 is engaged; Forza's pedal must be released (0).
+        for raw, expected in ((1., 0), (0., 255), (.75, 64)):
+            p.clutch = raw
+            with self.subTest(raw=raw):
+                frame = from_acc(p, g, s, validate({"game": "acc"}))
+                self.assertEqual(encode(frame, 0)[317], expected)
 
     def test_player_selection_rejects_invalid_and_ambiguous_slots(self):
         _, g, _ = fixture()
@@ -142,7 +151,13 @@ class ACCProtocolTests(unittest.TestCase):
             config = load_config(path)
         self.assertEqual(config["game"], "ac")
         self.assertFalse(config["invert_clutch"])
-        self.assertFalse(config["acc_invert_clutch"])
+        self.assertTrue(config["acc_invert_clutch"])
+        # Explicit overrides remain independent and survive loading old configs.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            self.assertTrue(load_config(path)["acc_invert_clutch"])
+            path.write_text('{"game": "acc", "acc_invert_clutch": false}', encoding="utf-8")
+            self.assertFalse(load_config(path)["acc_invert_clutch"])
         for changes in ({"game": "auto"}, {"game": None}, {"acc_invert_clutch": 1}):
             with self.assertRaises(ValueError):
                 validate(changes)
